@@ -189,6 +189,20 @@ class Recipe(BaseModel):
                     if group_key.endswith("_modifiers") and isinstance(group_val, dict):
                         inferred_group = group_key.replace("_modifiers", "")
                         for mod_type, mod_args in group_val.items():
+                            # A modifier written without arguments parses to
+                            # `None` in YAML (``ConstantPruningModifier:``).
+                            # Such a modifier is created from its defaults.
+                            if mod_args is None:
+                                mod_args = {}
+                            elif not isinstance(mod_args, dict):
+                                raise ValueError(
+                                    f"Modifier {mod_type!r} in recipe group "
+                                    f"{group_key!r} must map argument names to "
+                                    f"values, got {type(mod_args).__name__}. "
+                                    "Write the modifier's arguments as a YAML "
+                                    "mapping, or leave the value empty to use "
+                                    "its defaults."
+                                )
                             group = mod_args.get("group", inferred_group)
                             modifier = ModifierFactory.create(
                                 mod_type,
