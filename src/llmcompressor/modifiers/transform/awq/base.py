@@ -21,7 +21,7 @@ from compressed_tensors.utils import (
     update_offload_parameter,
 )
 from loguru import logger
-from pydantic import ConfigDict, PrivateAttr, field_validator
+from pydantic import ConfigDict, PrivateAttr, field_validator, model_validator
 from torch import distributed as dist
 from torch.nn import Module
 from torch.utils._pytree import tree_leaves
@@ -51,6 +51,11 @@ from llmcompressor.utils.helpers import calibration_forward_context
 from llmcompressor.utils.pytorch.module import get_module_to_name_dict
 
 __all__ = ["AWQModifier"]
+
+# Smallest `n_grid` that gives `_get_grid_search_params` at least two distinct
+# ratios, per `duo_scaling` setting. `duo_scaling="both"` needs twice as many
+# because it splits the grid across the two settings.
+_MIN_N_GRID: dict[bool | str, int] = {False: 2, True: 3, "both": 4}
 
 
 class AWQModifier(Modifier):
@@ -137,7 +142,9 @@ class AWQModifier(Modifier):
     :param n_grid: when performing the best scales grid search for each mapping,
         this specifies how many grid points should be used. To decrease the runtime,
         at the possible cost of slightly worse scales, this can be decreased.
-        Defaults to 20
+        Defaults to 20. The minimum depends on ``duo_scaling``: 2 when False,
+        3 when True, and 4 when "both", since that setting splits the grid
+        across both duo_scaling settings.
     """
 
     requires_calibration_data: bool = True
@@ -1034,6 +1041,31 @@ class AWQModifier(Modifier):
         if v not in (True, False, "both"):
             raise ValueError(f"duo_scaling must be True, False, or 'both', got {v!r}")
         return v
+
+    @model_validator(mode="after")
+    def validate_n_grid(self):
+        """Validate that `n_grid` yields a usable grid for `duo_scaling`.
+
+        The spacing between grid points divides by a term that depends on
+        `duo_scaling`, so too small an `n_grid` produced a `ZeroDivisionError`
+        (or, for `duo_scaling="both"` with `n_grid=1`, an empty grid) from
+        `_get_grid_search_params` during calibration. Reject it up front
+        instead, while the recipe is being validated.
+        """
+        minimum = _MIN_N_GRID.get(self.duo_scaling)
+        if minimum is not None and self.n_grid < minimum:
+            raise ValueError(
+                f"n_grid must be at least {minimum} when "
+                f"duo_scaling={self.duo_scaling!r}, got {self.n_grid}. "
+                "The grid search needs at least two distinct ratios"
+                + (
+                    ", and duo_scaling='both' splits them across the two "
+                    "duo_scaling settings."
+                    if self.duo_scaling == "both"
+                    else "."
+                )
+            )
+        return self
 
 
 def _check_layers_are_compatible(

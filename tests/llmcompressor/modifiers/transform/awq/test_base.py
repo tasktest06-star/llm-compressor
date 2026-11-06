@@ -785,6 +785,37 @@ def test_get_grid_search_params(n_grid, duo_scaling):
         assert abs(n_false - n_true) <= 1
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "duo_scaling, n_grid",
+    [
+        (True, 1),
+        (True, 2),
+        (False, 1),
+        ("both", 1),
+        ("both", 2),
+        ("both", 3),
+    ],
+)
+def test_n_grid_too_small_is_rejected(duo_scaling, n_grid):
+    # These used to raise ZeroDivisionError from `_get_grid_search_params`
+    # during calibration (or, for duo_scaling="both" with n_grid=1, silently
+    # produce an empty grid). They are now rejected when the modifier is built.
+    with pytest.raises(ValidationError, match="n_grid must be at least"):
+        AWQModifier(duo_scaling=duo_scaling, n_grid=n_grid)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("duo_scaling, n_grid", [(False, 2), (True, 3), ("both", 4)])
+def test_smallest_accepted_n_grid_gives_a_usable_grid(duo_scaling, n_grid):
+    # Every accepted n_grid must yield at least two distinct ratios in range.
+    grid = AWQModifier(duo_scaling=duo_scaling, n_grid=n_grid)._get_grid_search_params()
+
+    assert len(grid) >= 2
+    assert len({ratio for ratio, _ in grid}) >= 2
+    assert all(0.0 <= ratio <= 1.0 for ratio, _ in grid)
+
+
 @requires_compute_capability(9, 0)  # Requires H100 or higher
 @torch.no_grad()
 def test_awq_nvfp4_saves_fused_global_scale(tmp_path):
