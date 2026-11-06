@@ -169,12 +169,16 @@ class AutoWrapper(ast.NodeTransformer):
         except Exception:
             caller = None
 
-        finally:
-            if (
-                isinstance(caller, (FunctionType, MethodType))
-                and caller.__name__ in self.ignore
-            ):
-                return self._wrap_if_possible(node)
+        # Checked after the try/except, not in a `finally`. `caller` is only
+        # bound by the two branches above, so a BaseException from `_eval_expr`
+        # (KeyboardInterrupt, SystemExit) left it unbound and the `finally`
+        # raised UnboundLocalError over the top of it. Here the check is simply
+        # skipped and the original exception propagates.
+        if (
+            isinstance(caller, (FunctionType, MethodType))
+            and caller.__name__ in self.ignore
+        ):
+            return self._wrap_if_possible(node)
 
         return super().generic_visit(node)
 
