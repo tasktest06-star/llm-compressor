@@ -12,6 +12,7 @@ with warnings.catch_warnings():
 
 from llmcompressor.modifiers.gptq import GPTQModifier
 from llmcompressor.modifiers.quantization import QuantizationModifier
+from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 from llmcompressor.modifiers.transform import AWQModifier as AWQTransformModifier
 from llmcompressor.recipe import Recipe
 from llmcompressor.recipe.utils import append_recipe_dict
@@ -209,3 +210,39 @@ def test_recipe_validate_after(modifiers, is_valid):
     else:
         with pytest.raises(ValueError):
             Recipe.create_instance(modifiers)
+
+
+def test_recipe_accepts_explicit_group():
+    # `group` is a real `Modifier` field, and `Recipe.from_dict` reads it out of
+    # the modifier arguments, so an explicit `group` must not also be splatted
+    # in as a duplicate keyword argument.
+    recipe = Recipe.create_instance(
+        """
+        test_stage:
+            smoothquant_modifiers:
+                SmoothQuantModifier:
+                    smoothing_strength: 0.75
+                    group: custom_group
+        """
+    )
+
+    assert len(recipe.modifiers) == 1
+    modifier = recipe.modifiers[0]
+    assert isinstance(modifier, SmoothQuantModifier)
+    # The explicit group wins over the one inferred from the group key.
+    assert modifier.group == "custom_group"
+    # The remaining arguments still reach the modifier.
+    assert modifier.smoothing_strength == 0.75
+
+
+def test_recipe_infers_group_when_not_given():
+    recipe = Recipe.create_instance(
+        """
+        test_stage:
+            smoothquant_modifiers:
+                SmoothQuantModifier:
+                    smoothing_strength: 0.75
+        """
+    )
+
+    assert recipe.modifiers[0].group == "smoothquant"

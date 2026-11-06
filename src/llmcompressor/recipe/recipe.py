@@ -189,13 +189,19 @@ class Recipe(BaseModel):
                     if group_key.endswith("_modifiers") and isinstance(group_val, dict):
                         inferred_group = group_key.replace("_modifiers", "")
                         for mod_type, mod_args in group_val.items():
+                            # `group` is passed explicitly, so it must not also
+                            # be splatted in from the modifier's arguments.
                             group = mod_args.get("group", inferred_group)
                             modifier = ModifierFactory.create(
                                 mod_type,
                                 group=group,
                                 allow_registered=True,
                                 allow_experimental=True,
-                                **mod_args,
+                                **{
+                                    key: value
+                                    for key, value in mod_args.items()
+                                    if key != "group"
+                                },
                             )
                             modifiers.append(modifier)
 
