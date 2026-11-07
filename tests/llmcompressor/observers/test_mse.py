@@ -12,6 +12,7 @@ from compressed_tensors.utils.impl_backend import ImplBackend
 from compressed_tensors.utils.triton import tl, triton
 
 from llmcompressor.observers import MovingAverageMSEObserver, Observer
+from llmcompressor.observers.grid_search import _calculate_mse_error
 from llmcompressor.observers.helpers import flatten_for_calibration
 from llmcompressor.observers.mse import MemorylessMSEObserver, NVFP4ExpandedMSEObserver
 from llmcompressor.utils.triton_utils import quantize_dequantize
@@ -243,3 +244,53 @@ def test_mse_observer_rejects_expand_below_one(observer_cls):
 
     # expand >= 1.0 is accepted.
     observer_cls(base_name="weight", args=args, expand=1.0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_eager_mse_clips_outlier_in_half_precision(dtype):
+    # A per-tensor qparam group spans every token x hidden value, so the error
+    # sum used to overflow fp16's 65504 maximum and become `inf`. No shrink
+    # candidate was then accepted and the observer silently returned the plain
+    # min/max range, leaving the outlier unclipped. Every dtype must pick the
+    # same clipped range as fp32.
+    torch.manual_seed(0)
+    args = QuantizationArgs(
+        num_bits=8, type="int", strategy="tensor", symmetric=True, observer="mse"
+    )
+    observed = torch.randn(1, 2048, 4096) * 3
+    observed[0, 0, 0] = 400.0
+
+    observer = Observer.load_from_registry(
+        "memoryless_mse", base_name="input", args=args
+    )
+    observer(observed.to(dtype))
+    selected_max = observer.max_vals.float().item()
+
+    # The outlier sits well above the bulk of the distribution, so MSE clipping
+    # must land strictly below it.
+    assert selected_max < 400.0
+    assert selected_max == pytest.approx(324.0, rel=0.02)
+
+
+def test_eager_mse_error_does_not_overflow_half_precision():
+    # Guard the error reduction directly: the returned error must stay finite
+    # for a large fp16 group, otherwise the `error < best_error` comparison in
+    # the grid search can never be true.
+    args = QuantizationArgs(
+        num_bits=8, type="int", strategy="tensor", symmetric=True, observer="mse"
+    )
+    observed = (torch.randn(1, 2048, 4096) * 3).to(torch.float16)
+    flattened = flatten_for_calibration(observed, base_name="input", args=args)
+    min_vals = torch.amin(flattened, dim=(0, -1))
+    max_vals = torch.amax(flattened, dim=(0, -1))
+
+    error = _calculate_mse_error(
+        flattened,
+        args,
+        min_vals * 0.8,
+        max_vals * 0.8,
+        norm=2.4,
+        error_dtype=torch.float32,
+    )
+
+    assert torch.isfinite(error).all()

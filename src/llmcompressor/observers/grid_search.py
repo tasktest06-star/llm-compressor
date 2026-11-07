@@ -84,20 +84,21 @@ def _grid_search_observer(
     # kernel up to 512 values and FP32 split reductions above that; eager mirrors
     # the corresponding error rounding so the selected grid point matches.
     total_values = observed.shape[0] * observed.shape[-1]
-    if use_imatrix_error:
-        if total_values <= _GRID_SEARCH_TILE_SIZE and observed.dtype in (
-            torch.float16,
-            torch.bfloat16,
-        ):
-            error_dtype = observed.dtype
-        else:
-            error_dtype = torch.float32
-        error_norm = norm
-        if error_dtype != torch.float32:
-            error_norm = torch.tensor(norm, dtype=error_dtype).item()
+    # Both error formulas accumulate in FP32 above one tile. A half-precision
+    # error sum over a large qparam group (per-tensor activations or KV cache,
+    # where one group spans every token x hidden value) overflows the dtype's
+    # maximum and becomes `inf`. `inf < best_error` is never true, so no shrink
+    # candidate is ever accepted and clipping is silently lost.
+    if total_values <= _GRID_SEARCH_TILE_SIZE and observed.dtype in (
+        torch.float16,
+        torch.bfloat16,
+    ):
+        error_dtype = observed.dtype
     else:
-        error_dtype = min_vals.dtype
-        error_norm = norm
+        error_dtype = torch.float32
+    error_norm = norm
+    if use_imatrix_error and error_dtype != torch.float32:
+        error_norm = torch.tensor(norm, dtype=error_dtype).item()
 
     group_absmax = None
     if magnitude_normalization:
@@ -141,6 +142,7 @@ def _grid_search_observer(
                 shrink_min,
                 shrink_max,
                 norm,
+                error_dtype,
                 group_absmax,
             )
 
@@ -166,6 +168,7 @@ def _calculate_mse_error(
     shrink_min: torch.Tensor,
     shrink_max: torch.Tensor,
     norm: float,
+    error_dtype: torch.dtype,
     group_absmax: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Calculate eager MSE error using the observer's established QDQ path."""
@@ -178,10 +181,19 @@ def _calculate_mse_error(
     quantized = _fake_quantize_with_observer_qparams(
         observed, args, scales, zero_points
     )
-    error = (quantized - observed).abs().pow(norm)
+    # Raise to the norm and reduce in FP32, rounding to `error_dtype` only when
+    # the group is small enough that Triton's packed kernel keeps half
+    # precision. Reducing in half precision overflows to `inf` for a large
+    # group, which costs the observer its clipping entirely.
+    error = (quantized - observed).abs().float().pow(norm)
+    if error_dtype != torch.float32:
+        error = error.to(error_dtype).float()
     if group_absmax is not None:
         error = error * torch.sqrt(observed.float().square() + group_absmax.square())
-    return error.sum(dim=(0, -1))
+    result = error.sum(dim=(0, -1))
+    if error_dtype != torch.float32:
+        result = result.to(error_dtype)
+    return result
 
 
 def _make_grid_points(maxshrink: float, grid: float, grid_type: str) -> list[float]:
