@@ -82,9 +82,15 @@ def get_yaml_serializable_dict(modifiers: list[Modifier], stage: str) -> dict[st
         group_name = f"{group}_modifiers"
         modifier_type = modifier.__class__.__name__
 
+        # Dump in JSON mode so every value is a plain scalar, list or dict.
+        # A python-mode dump keeps objects such as `QuantizationType.INT`,
+        # `torch.device("cpu")`, `Sentinel` and tuples, which `yaml.dump` then
+        # writes as `!!python/object/apply:...` tags. Recipes are read back with
+        # `yaml.safe_load`, which rejects those tags, so the recipe.yaml saved
+        # next to a model could not be loaded again by llm-compressor itself.
         args = {
             k: v
-            for k, v in modifier.model_dump().items()
+            for k, v in modifier.model_dump(mode="json").items()
             if v is not None and not k.endswith("_") and k != "group"
         }
 
