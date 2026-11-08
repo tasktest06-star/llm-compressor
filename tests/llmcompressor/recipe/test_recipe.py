@@ -12,6 +12,7 @@ with warnings.catch_warnings():
 
 from llmcompressor.modifiers.gptq import GPTQModifier
 from llmcompressor.modifiers.quantization import QuantizationModifier
+from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 from llmcompressor.modifiers.transform import AWQModifier as AWQTransformModifier
 from llmcompressor.recipe import Recipe
 from llmcompressor.recipe.utils import append_recipe_dict
@@ -209,3 +210,37 @@ def test_recipe_validate_after(modifiers, is_valid):
     else:
         with pytest.raises(ValueError):
             Recipe.create_instance(modifiers)
+
+
+def test_recipe_accepts_modifier_without_arguments():
+    # A modifier written with no arguments parses to `None` in YAML and must be
+    # created from its defaults instead of raising an AttributeError.
+    recipe = Recipe.create_instance(
+        """
+        test_stage:
+            smoothquant_modifiers:
+                SmoothQuantModifier:
+        """
+    )
+
+    assert len(recipe.modifiers) == 1
+    modifier = recipe.modifiers[0]
+    assert isinstance(modifier, SmoothQuantModifier)
+    # The group is still inferred from the group key.
+    assert modifier.group == "smoothquant"
+    # Every argument keeps its default.
+    assert modifier.smoothing_strength == SmoothQuantModifier().smoothing_strength
+
+
+def test_recipe_rejects_non_mapping_modifier_arguments():
+    # Anything that is neither a mapping nor empty cannot be splatted into the
+    # modifier, so it is reported against the recipe rather than as an
+    # AttributeError from inside the loader.
+    with pytest.raises(ValueError, match="must map argument names to values"):
+        Recipe.create_instance(
+            """
+            test_stage:
+                smoothquant_modifiers:
+                    SmoothQuantModifier: 5
+            """
+        )
