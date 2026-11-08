@@ -240,3 +240,72 @@ def test_alpha_heuristic_layer_types():
     attn_alpha = alphas["model.layers.0.self_attn.q_proj"]
     # Embedding should be highest
     assert embed_alpha > attn_alpha
+
+
+def _w4_group(group_size):
+    return QuantizationScheme(
+        targets=["Linear"],
+        weights=QuantizationArgs(
+            num_bits=4,
+            type="int",
+            symmetric=True,
+            strategy="group",
+            group_size=group_size,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "schemes, description",
+    [
+        ([_w4_group(32), _w4_group(128)], "two custom schemes differing in group_size"),
+        (["W4A16", _w4_group(32)], "a preset alongside a custom scheme"),
+    ],
+)
+def test_resolve_schemes_keeps_every_candidate(schemes, description):
+    # A scheme object is keyed only by its bitwidths (`W{w}A{a}`), so
+    # candidates that differ in strategy, group size, type or symmetry used to
+    # collide and the later one silently replaced the earlier. The ILP then
+    # chose from a smaller set than the caller offered.
+    collector = HiggsMSECollectorConverter(candidate_schemes=schemes, ignore=[])
+
+    assert len(collector.candidate_schemes) == len(schemes), description
+    # Distinct names keep them addressable in the MSE matrix and ILP.
+    assert len(set(collector.candidate_schemes)) == len(schemes)
+    group_sizes = {s.weights.group_size for s in collector.candidate_schemes.values()}
+    assert len(group_sizes) == 2
+
+
+def test_mse_matrix_scores_every_candidate():
+    # Every candidate must get a per-layer MSE, since that matrix is what the
+    # ILP minimizes over.
+    collector = HiggsMSECollectorConverter(
+        candidate_schemes=[_w4_group(32), _w4_group(128)], ignore=[]
+    )
+    torch.manual_seed(0)
+    tensors = {
+        f"model.layers.{i}.mlp.down_proj.weight": torch.randn(256, 256)
+        for i in range(2)
+    }
+
+    collector.process(tensors)
+
+    names = set(collector.candidate_schemes)
+    assert collector.mse_matrix
+    for layer, scores in collector.mse_matrix.items():
+        assert set(scores) == names, layer
+
+    # The finer group size is the better candidate on every layer, and it is
+    # the one that used to be dropped.
+    finer = next(
+        name
+        for name, scheme in collector.candidate_schemes.items()
+        if scheme.weights.group_size == 32
+    )
+    coarser = next(
+        name
+        for name, scheme in collector.candidate_schemes.items()
+        if scheme.weights.group_size == 128
+    )
+    for layer, scores in collector.mse_matrix.items():
+        assert scores[finer] < scores[coarser], layer

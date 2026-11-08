@@ -93,7 +93,8 @@ class HiggsMSECollectorConverter(Converter):
         resolved = {}
         for scheme in schemes:
             if isinstance(scheme, str):
-                resolved[scheme] = preset_name_to_scheme(scheme, targets=self.targets)
+                key = scheme
+                candidate = preset_name_to_scheme(scheme, targets=self.targets)
             elif isinstance(scheme, QuantizationScheme):
                 if scheme.weights:
                     key = f"W{scheme.weights.num_bits}"
@@ -104,9 +105,28 @@ class HiggsMSECollectorConverter(Converter):
                     )
                 else:
                     key = f"scheme_{len(resolved)}"
-                resolved[key] = scheme
+                candidate = scheme
             else:
                 raise ValueError(f"Invalid scheme type: {type(scheme)}")
+
+            # The key only encodes bitwidths, so candidates that differ in
+            # strategy, group size, type or symmetry map to the same name --
+            # as do a preset and a custom scheme of the same bitwidths.
+            # Assigning over the key dropped the earlier candidate, so the ILP
+            # chose from a smaller set than the caller offered and could return
+            # a worse scheme than one that was passed in.
+            unique_key = key
+            suffix = 2
+            while unique_key in resolved:
+                unique_key = f"{key}_{suffix}"
+                suffix += 1
+            if unique_key != key:
+                logger.debug(
+                    f"Candidate scheme name {key} is already taken; "
+                    f"tracking this candidate as {unique_key}"
+                )
+
+            resolved[unique_key] = candidate
         return resolved
 
     def validate(self, tensors: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
