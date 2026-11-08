@@ -15,6 +15,7 @@ from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.modifiers.transform import AWQModifier as AWQTransformModifier
 from llmcompressor.recipe import Recipe
 from llmcompressor.recipe.utils import append_recipe_dict
+from llmcompressor.sentinel import Sentinel
 from tests.llmcompressor.helpers import valid_recipe_strings
 
 
@@ -209,3 +210,63 @@ def test_recipe_validate_after(modifiers, is_valid):
     else:
         with pytest.raises(ValueError):
             Recipe.create_instance(modifiers)
+
+
+def _round_trip(modifier):
+    """Serialize a modifier to a recipe and load it back."""
+    return Recipe.create_instance(Recipe.from_modifiers(modifier).yaml()).modifiers[0]
+
+
+def _resolved_actorder(modifier):
+    config = modifier.resolve_quantization_config()
+    return config.config_groups["group_0"].weights.actorder
+
+
+def test_gptq_explicit_actorder_none_survives_round_trip():
+    # `None` is how the observers guide documents turning activation ordering
+    # off. A `None` the user set was dropped on the way out, so the reloaded
+    # recipe fell back to the `Sentinel("static")` default and quietly turned
+    # activation ordering back on.
+    modifier = GPTQModifier(
+        targets="Linear", scheme="W4A16", ignore=["lm_head"], actorder=None
+    )
+
+    assert _resolved_actorder(modifier) is None
+    assert _resolved_actorder(_round_trip(modifier)) is None
+
+
+def test_gptq_unset_actorder_is_not_serialized():
+    # The default is a `Sentinel`, which serializes to its name. Writing
+    # `actorder: static` made a later load treat the default as a value the
+    # user set on the modifier.
+    modifier = GPTQModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"])
+
+    assert (
+        "actorder"
+        not in yaml.safe_load(Recipe.from_modifiers(modifier).yaml())["default_stage"][
+            "default_modifiers"
+        ]["GPTQModifier"]
+    )
+    # The reloaded modifier still holds an unresolved default.
+    assert isinstance(_round_trip(modifier).actorder, Sentinel)
+
+
+def test_gptq_config_groups_actorder_survives_round_trip():
+    # With `actorder: static` written out as a plain string, a differing
+    # `actorder` in `config_groups` made the reloaded recipe raise
+    # "both are provided and differ" when the config was resolved.
+    weights = {
+        "num_bits": 4,
+        "type": "int",
+        "symmetric": True,
+        "strategy": "group",
+        "group_size": 128,
+        "actorder": "weight",
+    }
+    modifier = GPTQModifier(
+        ignore=["lm_head"],
+        config_groups={"group_0": {"targets": ["Linear"], "weights": weights}},
+    )
+
+    assert _resolved_actorder(modifier) == "weight"
+    assert _resolved_actorder(_round_trip(modifier)) == "weight"

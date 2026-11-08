@@ -5,6 +5,7 @@ from typing import Any
 import yaml
 
 from llmcompressor.modifiers import Modifier
+from llmcompressor.sentinel import Sentinel
 
 
 def _load_json_or_yaml_string(content: str) -> dict[str, Any]:
@@ -82,11 +83,29 @@ def get_yaml_serializable_dict(modifiers: list[Modifier], stage: str) -> dict[st
         group_name = f"{group}_modifiers"
         modifier_type = modifier.__class__.__name__
 
-        args = {
-            k: v
-            for k, v in modifier.model_dump().items()
-            if v is not None and not k.endswith("_") and k != "group"
-        }
+        dumped = modifier.model_dump()
+        args = {}
+        for key, value in dumped.items():
+            if key.endswith("_") or key == "group":
+                continue
+
+            # An argument still holding a `Sentinel` is an unresolved default.
+            # A `Sentinel` serializes to its name, so writing it out (e.g.
+            # `actorder: static`) makes a later load read it as a value the
+            # user set on the modifier, which then conflicts with an
+            # `actorder` coming from `config_groups`. Skip it so the default
+            # resolves again on load.
+            if isinstance(getattr(modifier, key, None), Sentinel):
+                continue
+
+            # An unset argument that happens to be `None` carries no
+            # information, but a `None` the user set explicitly does -- for
+            # `actorder` it is how activation ordering is turned off -- so it
+            # must survive the round trip.
+            if value is None and key not in modifier.model_fields_set:
+                continue
+
+            args[key] = value
 
         if group_name not in stage_dict[stage_name]:
             stage_dict[stage_name][group_name] = {}
