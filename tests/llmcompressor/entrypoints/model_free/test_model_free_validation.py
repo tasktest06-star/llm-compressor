@@ -12,6 +12,9 @@ from compressed_tensors.utils.safetensors_load import (
 from safetensors.torch import save_file
 
 from llmcompressor.entrypoints.model_free.converter import ModelFreePtqConverter
+from llmcompressor.entrypoints.model_free.validate import validate_config
+from llmcompressor.modifiers.quantization.calibration import initialize_observer
+from llmcompressor.observers import Observer
 
 
 def _get_block_config() -> QuantizationConfig:
@@ -72,3 +75,45 @@ def test_validate_does_not_calibrate_expanded_mse_observer():
         "model.layers.0.self_attn.q_proj.weight_scale",
         "model.layers.0.self_attn.q_proj.weight_global_scale",
     }
+
+
+@pytest.mark.parametrize("observer", ["minmax", "mse", "memoryless_minmax"])
+def test_validate_config_keeps_weight_observer_name(observer):
+    # `_validate_scheme` used to rewrite `minmax`/`mse` to `static_<name>`.
+    # `static_mse` is not a registered observer, so the rewrite made every
+    # `mse` scheme fail at observer lookup. The names are now left alone and
+    # resolved by `initialize_observer` instead.
+    scheme = preset_name_to_scheme("W4A16", ["Linear"])
+    scheme.weights.observer = observer
+
+    config = validate_config(config=None, scheme=scheme, ignore=["lm_head"])
+
+    assert config.config_groups["config_group_0"].weights.observer == observer
+
+
+@pytest.mark.parametrize(
+    "observer,expected",
+    [
+        ("minmax", "memoryless_minmax"),
+        ("static_minmax", "memoryless_minmax"),
+        ("mse", "memoryless_mse"),
+        ("memoryless_minmax", "memoryless_minmax"),
+        ("memoryless_mse", "memoryless_mse"),
+    ],
+)
+def test_weight_observer_resolves_to_registered_observer(observer, expected):
+    # The weight observer that model-free PTQ actually attaches must exist in
+    # the registry; `static_mse` never did.
+    scheme = preset_name_to_scheme("W4A16", ["Linear"])
+    scheme.weights.observer = observer
+
+    module = torch.nn.Linear(128, 128, bias=False)
+    module.quantization_scheme = scheme
+    initialize_observer(module, "weight")
+
+    assert (
+        module.weight_observer.__class__
+        == Observer.load_from_registry(
+            expected, base_name="weight", args=scheme.weights
+        ).__class__
+    )
