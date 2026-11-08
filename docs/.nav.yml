@@ -58,8 +58,10 @@ nav:
       - oneshot: guides/entrypoints/oneshot.md
       - model-free-ptq: guides/entrypoints/model-free-ptq.md
       - convert_checkpoint: guides/entrypoints/convert.md
+    - Recipes: guides/recipes.md
     - Compression Schemes: guides/compression_schemes.md
     - Observers: guides/observers.md
+    - AWQ Scale Search: guides/awq_scale_search.md
     - Big Models and Distributed Support:
       - Model Loading: guides/big_models_and_distributed/model_loading.md
       - Sequential Onloading: guides/big_models_and_distributed/sequential_onloading.md

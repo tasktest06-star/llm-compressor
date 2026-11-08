@@ -6,6 +6,22 @@ Welcome to the LLM Compressor guides section! Here you'll find comprehensive doc
 
 <div class="grid cards" markdown>
 
+- :material-file-document-edit:{ .lg .middle } Recipes
+
+    ---
+
+    Understand how a recipe is structured — stages, modifier groups, and modifier arguments — and the rules that let a saved `recipe.yaml` be read back and reused.
+
+    [:octicons-arrow-right-24: Recipes](recipes.md)
+
+- :material-magnify-scan:{ .lg .middle } AWQ Scale Search
+
+    ---
+
+    Learn how AWQ chooses its per-channel scales, and what the `duo_scaling` and `n_grid` arguments actually sweep.
+
+    [:octicons-arrow-right-24: AWQ Scale Search](awq_scale_search.md)
+
 - :material-tune:{ .lg .middle } Compression Schemes
 
     ---

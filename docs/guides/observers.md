@@ -240,6 +240,27 @@ observer inherits these options but overrides some defaults as described above.
 
 MSE and iMatrix grid searches run with `global_scale=None` — the shrink search optimizes using FP32 scales, since `global_scale` cancels out when comparing quantization error across shrink candidates. The actual `global_scale` is computed later in `get_qparams()` from the final min/max values.
 
+#### Error accumulation precision
+
+The grid search picks a candidate range by comparing a *summed* error across
+every value covered by one quantization parameter. That sum is accumulated in
+FP32 whenever a qparam group spans more than one 512-value tile
+(`_GRID_SEARCH_TILE_SIZE`), and in the observed dtype below it.
+
+The split exists so the eager and Triton implementations select the same grid
+point: Triton's packed kernel keeps half precision for a single tile, while its
+split kernel reduces into an FP32 buffer above that.
+
+Accumulating a large group in half precision is not merely imprecise, it is
+lossy in a silent way. A per-tensor activation or KV-cache group covers every
+token × hidden value, so its error sum easily exceeds the FP16 maximum of
+65504 and saturates to `inf`. Since the search only accepts a candidate whose
+error is strictly lower than the best so far, and nothing is lower than `inf`,
+no shrink candidate is ever accepted and the observer falls back to the plain
+min/max range — losing MSE clipping altogether, with no warning. FP32
+accumulation is what makes an FP16 model select the same range as FP32 and
+BF16.
+
 ### IMatrix observer (`imatrix_mse`)
 
 The search options and objective are documented once in the
