@@ -2,6 +2,7 @@ import tempfile
 import warnings
 
 import pytest
+import torch
 import yaml
 
 # Suppress deprecation warning for AWQModifier import as this test
@@ -12,6 +13,7 @@ with warnings.catch_warnings():
 
 from llmcompressor.modifiers.gptq import GPTQModifier
 from llmcompressor.modifiers.quantization import QuantizationModifier
+from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 from llmcompressor.modifiers.transform import AWQModifier as AWQTransformModifier
 from llmcompressor.recipe import Recipe
 from llmcompressor.recipe.utils import append_recipe_dict
@@ -209,3 +211,80 @@ def test_recipe_validate_after(modifiers, is_valid):
     else:
         with pytest.raises(ValueError):
             Recipe.create_instance(modifiers)
+
+
+def _quant_modifier():
+    return QuantizationModifier(
+        ignore=["lm_head"], scheme="W4A16_ASYM", targets=["Linear"]
+    )
+
+
+@pytest.mark.parametrize(
+    "modifiers",
+    [
+        # `type` left out of `weights`, so compressed-tensors keeps the default
+        # as a `QuantizationType` enum member rather than a plain string.
+        pytest.param(
+            [
+                QuantizationModifier(
+                    ignore=["lm_head"],
+                    config_groups={
+                        "group_0": {
+                            "targets": ["Linear"],
+                            "weights": {
+                                "num_bits": 8,
+                                "symmetric": True,
+                                "strategy": "channel",
+                            },
+                        }
+                    },
+                )
+            ],
+            id="config_groups_default_type",
+        ),
+        pytest.param(
+            [
+                QuantizationModifier(
+                    ignore=["lm_head"],
+                    scheme="W4A16",
+                    kv_cache_scheme={
+                        "num_bits": 8,
+                        "symmetric": True,
+                        "strategy": "tensor",
+                    },
+                )
+            ],
+            id="kv_cache_scheme_default_type",
+        ),
+        # `torch.device` serialized as `!!python/object/apply:torch.device [cpu]`.
+        pytest.param(
+            [
+                AWQTransformModifier(offload_device=torch.device("cpu")),
+                _quant_modifier(),
+            ],
+            id="awq_offload_device",
+        ),
+        # An uninitialized AWQModifier holds a `Sentinel` default, which was
+        # written as a tag including the absolute path of sentinel.py.
+        pytest.param(
+            [AWQTransformModifier(), _quant_modifier()],
+            id="awq_uninitialized_sentinel",
+        ),
+        # Tuples serialized as `!!python/tuple`.
+        pytest.param(
+            [SmoothQuantModifier(mappings=[(["re:.*q_proj"], "re:.*input_layernorm")])],
+            id="smoothquant_tuple_mappings",
+        ),
+    ],
+)
+def test_serialized_recipe_has_no_python_tags(modifiers):
+    # Recipes are read back with `yaml.safe_load`, so a serialized recipe must
+    # contain only plain scalars, lists and dicts. A `!!python/object/apply:...`
+    # tag made the recipe.yaml saved next to a model unloadable by
+    # llm-compressor itself, both as a `recipe=` argument and when
+    # `update_and_save_recipe` reloaded it to append a stage.
+    serialized = Recipe.from_modifiers(modifiers).yaml()
+
+    assert "!!python" not in serialized
+    # Round trips through the same loader that reads a saved recipe.yaml.
+    assert Recipe.create_instance(serialized) is not None

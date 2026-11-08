@@ -272,7 +272,11 @@ class Recipe(BaseModel):
 
         # Dump YAML
         file_stream = None if file_path is None else open(file_path, "w")
-        yaml_str = yaml.dump(
+        # `safe_dump` mirrors the `yaml.safe_load` used to read recipes back, so
+        # a value that is not a plain scalar, list or dict raises here instead
+        # of being written as a `!!python/object/apply:...` tag that no reader
+        # of this recipe can load.
+        yaml_str = yaml.safe_dump(
             merged_dict,
             stream=file_stream,
             allow_unicode=True,
